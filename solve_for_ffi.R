@@ -8,6 +8,7 @@ library(assertthat)
 library(dplyr)
 library(ggplot2)
 library(FME)
+#remotes::install_github("jgcri/hector@v3.1.0")
 library(hector)
 library(tidyr)
 
@@ -103,7 +104,7 @@ make_objective_fxn <- function(input_df, comp_df, hc){
 #   inputs_df: dataframe of Hector ffi emission to vary should be the same dimensions at the
 #   target_df: datafrmae of the target data!
 #   hc: an active Hector core
-# Returns: an object created by FME::modFit (this is )
+# Returns: an object created by FME::modFit ths solver
 solve_ffipathway <- function(input_df, target_df, hc){
 
   # Check the inputs
@@ -155,13 +156,39 @@ solve_ffipathway <- function(input_df, target_df, hc){
 }
 
 
+# Function used to run Hector with the solved pathway
+# Args
+#   obj: object returned by solve_ffipathway
+#   hc: hector core to use
+#   yrs: vector of hector output to save
+#   vars: vector of hector variables to return
+# Returns: data frame of hector results
+use_ffipathway <- function(obj, hc, yrs = 1900:2100, vars = c(GLOBAL_TAS(), FFI_EMISSIONS(),
+                                                              CONCENTRATIONS_CO2(), RF_TOTAL(), DACCS_UPTAKE())){
+  req_names <- c("par", "hessian", "residuals", "info", "message", "iterations", "rsstrace",
+                 "ssr", "diag", "ms", "var_ms", "var_ms_unscaled", "var_ms_unweighted", "rank",
+                 "df.residual", "pathway")
+  assertthat::assert_that(has_name(x = obj, which = req_names), msg = "df should be object returned by solve_ffipathway")
+
+  reset(hc)
+  x <- split(obj[["pathway"]], obj[["pathway"]][["variable"]]) %>%
+    lapply(function(dat){
+      setvar(core = hc, dates = dat$year, values = dat$value,
+             var = dat$variable, unit = dat$units)
+      reset(hc)
+    })
+  run(hc)
+  fetchvars(core = hc, 1900:2100, vars) %>%
+    mutate(scenario = "new scenario") ->
+    out
+  return(out)
+}
 
 
 # 1. Example 1 (Warmer than SSP245)--------------------------------------------------------------------------------------------------
 # Set up the Hector core to use the ssp245 scenario
 inifile <- system.file(package = "hector", "input/hector_ssp245.ini")
 hc <- newcore(inifile)
-
 
 # Run the ssp245 scenario and save the results to be used to make our target and in comparisons
 run(hc)
@@ -186,48 +213,32 @@ ggplot() +
   geom_line(data = original_hector_output %>% filter(variable == GLOBAL_TAS()), aes(year, value, color = scenario)) +
   geom_line(data = temp_target_data , aes(year, value, color = scenario))
 
-
 # Extract the FFI emissions used in the original run as a starting point
 original_hector_output %>%
   filter(variable == FFI_EMISSIONS()) %>%
   filter(year %in% 2020:2100) ->
   input_df
 
-
 # Set up a fresh core
 inifile <- system.file(package = "hector", "input/hector_ssp245.ini")
 core <- newcore(inifile)
 
-out1 <- solve_ffipathway(input_df = input_df, target_df = temp_target_data, hc = core)
-
-
-# Now run Hector with the new inputs!
-use_this_pathways <- out1$pathway
-setvar(core = core, dates = use_this_pathways$year, values = use_this_pathways$value,
-       var = use_this_pathways$variable, unit = use_this_pathways$units)
-reset(core)
-run(core)
-
-fetchvars(core, 1900:2100, vars = c(GLOBAL_TAS(), FFI_EMISSIONS(),
-                                    CONCENTRATIONS_CO2(), RF_TOTAL())) %>%
-  mutate(scenario = "new scenario") ->
-  new_hector_output
+# Solve for the pathway and use it to run hector!
+fit1 <- solve_ffipathway(input_df = input_df, target_df = temp_target_data, hc = core)
+out1 <- use_ffipathway(obj = fit1, hc = core)
 
 # Compare the plots
-rbind(original_hector_output, new_hector_output) %>%
+rbind(original_hector_output, out1) %>%
   filter(year > 2015) %>%
   ggplot() +
   geom_line(aes(year, value, color = scenario)) +
   geom_line(data = temp_target_data, aes(year, value, color = "target"), linetype = 2) +
   facet_wrap("variable", scales = "free")
 
-
-
 # 2. Example 2 (Cooler than SSP245)--------------------------------------------------------------------------------------------------
 # Set up the Hector core to use the ssp245 scenario
 inifile <- system.file(package = "hector", "input/hector_ssp245.ini")
 hc <- newcore(inifile)
-
 
 # Run the ssp245 scenario and save the results to be used to make our target and in comparisons
 run(hc)
@@ -264,28 +275,17 @@ original_hector_output %>%
 inifile <- system.file(package = "hector", "input/hector_ssp245.ini")
 core <- newcore(inifile)
 
-out2 <- solve_ffipathway(input_df = input_df, target_df = temp_target_data2, hc = core)
-
-
-# Now run Hector with the new inputs!
-use_this_pathways <- out2$pathway
-setvar(core = core, dates = use_this_pathways$year, values = use_this_pathways$value,
-       var = use_this_pathways$variable, unit = use_this_pathways$units)
-reset(core)
-run(core)
-
-fetchvars(core, 1900:2100, vars = c(GLOBAL_TAS(), FFI_EMISSIONS(),
-                                    CONCENTRATIONS_CO2(), RF_TOTAL())) %>%
-  mutate(scenario = "new scenario") ->
-  new_hector_output
+fit2 <- solve_ffipathway(input_df = input_df, target_df = temp_target_data2, hc = core)
+out2 <- use_ffipathway(obj = fit2, hc = core)
 
 # Compare the plots
-rbind(original_hector_output, new_hector_output) %>%
+rbind(original_hector_output, out2) %>%
   filter(year > 2015) %>%
   ggplot() +
   geom_line(aes(year, value, color = scenario)) +
   geom_line(data = temp_target_data2, aes(year, value, color = "target"), linetype = 2) +
   facet_wrap("variable", scales = "free")
+
 
 # 3. Example 3 (Cooler than SSP119)--------------------------------------------------------------------------------------------------
 # Set up the Hector core to use the ssp245 scenario
@@ -323,38 +323,17 @@ original_hector_output %>%
   filter(year %in% 2020:2100) ->
   input_df
 
-
 # Set up a fresh core
 inifile <- system.file(package = "hector", "input/hector_ssp119.ini")
 core <- newcore(inifile)
 
-out3 <- solve_ffipathway(input_df = input_df, target_df = temp_target_data3, hc = core)
-
-
-# Now run Hector with the new inputs!
-use_this_pathways <- out3$pathway
-
-
-# Because setvar only likes to use 1 time series of data at a time use
-# lapply to apply setvar to the daccs and ffi emissions seperately.
-split(use_this_pathways, use_this_pathways$variable) %>%
-  lapply(function(dat){
-    setvar(core = core, dates = dat$year, values = dat$value,
-           var = dat$variable, unit = dat$units)
-    reset(core)
-  })
-
-run(core)
-fetchvars(core, 1900:2100, vars = c(GLOBAL_TAS(), DACCS_UPTAKE(), FFI_EMISSIONS(),
-                                    CONCENTRATIONS_CO2(), RF_TOTAL())) %>%
-  mutate(scenario = "new scenario") ->
-  new_hector_output
+fit3 <- solve_ffipathway(input_df = input_df, target_df = temp_target_data3, hc = core)
+out3 <- use_ffipathway(obj = fit3, hc = core)
 
 # Compare the plots
-rbind(original_hector_output, new_hector_output) %>%
+rbind(original_hector_output, out3) %>%
   filter(year > 2015) %>%
   ggplot() +
   geom_line(aes(year, value, color = scenario)) +
   geom_line(data = temp_target_data3, aes(year, value, color = "target"), linetype = 2) +
   facet_wrap("variable", scales = "free")
-
